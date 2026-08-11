@@ -184,6 +184,14 @@ type Platform struct {
 	imageBatchMu     sync.Mutex
 	imageBatch       map[string]*imageBatchEntry
 	imageBatchWindow time.Duration // quiet period before flushing a batch; 0 means use defaultImageBatchWindow
+	// fileBatch applies the same burst coalescing to ordinary Feishu files.
+	// Feishu emits a multi-select send as separate file events; buffering the
+	// metadata before download prevents a later/smaller file from reaching the
+	// engine first and making an older file look stale to the create_time
+	// watermark.
+	fileBatchMu     sync.Mutex
+	fileBatch       map[string]*fileBatchEntry
+	fileBatchWindow time.Duration
 }
 
 // defaultImageBatchWindow is the quiet period after the last image in a
@@ -195,6 +203,11 @@ type Platform struct {
 // it via the platform option `image_batch_window_ms`.
 const defaultImageBatchWindow = 500 * time.Millisecond
 
+// defaultFileBatchWindow is the quiet period used to identify one Feishu
+// multi-select file send. File resources are downloaded only after this
+// window closes, so resource size cannot influence event ordering.
+const defaultFileBatchWindow = 500 * time.Millisecond
+
 // batchWindow returns the effective image-batch coalesce window for this
 // Platform. Tests and zero-initialised Platforms fall back to the default so
 // they never schedule a zero-duration timer (which would fire immediately and
@@ -204,6 +217,13 @@ func (p *Platform) batchWindow() time.Duration {
 		return p.imageBatchWindow
 	}
 	return defaultImageBatchWindow
+}
+
+func (p *Platform) fileBatchDelay() time.Duration {
+	if p.fileBatchWindow > 0 {
+		return p.fileBatchWindow
+	}
+	return defaultFileBatchWindow
 }
 
 // coerceMilliseconds normalises numeric TOML values (which decode as int64 or
@@ -248,6 +268,30 @@ type imageBatchEntry struct {
 	createTimeMs int64
 	parentID     string
 	timer        *time.Timer
+}
+
+// fileBatchItem keeps the Feishu resource metadata needed to download one
+// ordinary file after the batch window closes. Keeping download out of the
+// per-event goroutine is important: otherwise download completion order can
+// invert Feishu's create_time order before the messages reach core.Engine.
+type fileBatchItem struct {
+	messageID    string
+	fileKey      string
+	fileName     string
+	rctx         replyContext
+	createTimeMs int64
+}
+
+// fileBatchEntry holds consecutive plain file messages for one Feishu
+// session. Quoted files bypass this buffer so their reply context remains
+// isolated.
+type fileBatchEntry struct {
+	sessionKey string
+	userID     string
+	userName   string
+	chatName   string
+	items      []fileBatchItem
+	timer      *time.Timer
 }
 
 // compile-time interface assertions
@@ -368,6 +412,17 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		}
 		imageBatchWindow = time.Duration(ms) * time.Millisecond
 	}
+	fileBatchWindow := defaultFileBatchWindow
+	if raw, ok := opts["file_batch_window_ms"]; ok {
+		ms, err := coerceMilliseconds(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid file_batch_window_ms %v: %w", name, raw, err)
+		}
+		if ms < 0 {
+			return nil, fmt.Errorf("%s: file_batch_window_ms must be >= 0, got %d", name, ms)
+		}
+		fileBatchWindow = time.Duration(ms) * time.Millisecond
+	}
 
 	// Webhook mode configuration (for Lark international version)
 	port, _ := opts["port"].(string)
@@ -413,6 +468,8 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		mentionMap:                 mentionMap,
 		imageBatch:                 make(map[string]*imageBatchEntry),
 		imageBatchWindow:           imageBatchWindow,
+		fileBatch:                  make(map[string]*fileBatchEntry),
+		fileBatchWindow:            fileBatchWindow,
 	}
 	if !useInteractiveCard {
 		base.self = base
@@ -1253,6 +1310,167 @@ func (p *Platform) dispatchImageBatchEntry(entry *imageBatchEntry) {
 	})
 }
 
+// bufferFile adds a plain Feishu file event to the per-session batch before
+// downloading it. Multi-select sends arrive as separate events, and starting
+// each download immediately can invert their completion order. The resulting
+// older event may then be rejected by core.Engine's create_time watermark.
+func (p *Platform) bufferFile(sessionKey string, entry *fileBatchEntry) {
+	p.fileBatchMu.Lock()
+	if p.fileBatch == nil {
+		p.fileBatch = make(map[string]*fileBatchEntry)
+	}
+
+	var toFlush *fileBatchEntry
+	if existing, ok := p.fileBatch[sessionKey]; ok {
+		if existing.userID != entry.userID {
+			if existing.timer != nil {
+				existing.timer.Stop()
+			}
+			delete(p.fileBatch, sessionKey)
+			toFlush = existing
+		}
+	}
+
+	if existing, ok := p.fileBatch[sessionKey]; ok {
+		if existing.timer != nil {
+			existing.timer.Stop()
+		}
+		existing.items = append(existing.items, entry.items...)
+		// Keep the newest resolved display metadata for the merged message.
+		if entry.userName != "" {
+			existing.userName = entry.userName
+		}
+		if entry.chatName != "" {
+			existing.chatName = entry.chatName
+		}
+		ref := existing
+		existing.timer = time.AfterFunc(p.fileBatchDelay(), func() {
+			p.flushFileBatchByRef(sessionKey, ref)
+		})
+	} else {
+		ref := entry
+		entry.timer = time.AfterFunc(p.fileBatchDelay(), func() {
+			p.flushFileBatchByRef(sessionKey, ref)
+		})
+		p.fileBatch[sessionKey] = entry
+	}
+
+	p.fileBatchMu.Unlock()
+
+	if toFlush != nil {
+		p.dispatchFileBatchEntry(toFlush)
+	}
+}
+
+// flushFileBatchByRef dispatches a file batch only when the timer still owns
+// the current map entry. Superseded timer callbacks become safe no-ops.
+func (p *Platform) flushFileBatchByRef(sessionKey string, ref *fileBatchEntry) {
+	p.fileBatchMu.Lock()
+	current, ok := p.fileBatch[sessionKey]
+	if !ok || current != ref {
+		p.fileBatchMu.Unlock()
+		return
+	}
+	if current.timer != nil {
+		current.timer.Stop()
+	}
+	delete(p.fileBatch, sessionKey)
+	p.fileBatchMu.Unlock()
+
+	p.dispatchFileBatchEntry(current)
+}
+
+// flushFileBatches synchronously downloads and dispatches all pending file
+// batches. Stop calls this so accepted Feishu file events are not abandoned.
+func (p *Platform) flushFileBatches() {
+	p.fileBatchMu.Lock()
+	pending := p.fileBatch
+	p.fileBatch = make(map[string]*fileBatchEntry)
+	p.fileBatchMu.Unlock()
+
+	for _, entry := range pending {
+		if entry.timer != nil {
+			entry.timer.Stop()
+		}
+		p.dispatchFileBatchEntry(entry)
+	}
+}
+
+// dispatchFileBatchEntry downloads a burst in Feishu create_time order and
+// emits one core.Message containing every successfully downloaded file. A
+// single canonical message prevents core's watermark from discarding an older
+// member merely because its resource download completed later.
+func (p *Platform) dispatchFileBatchEntry(entry *fileBatchEntry) {
+	if entry == nil || len(entry.items) == 0 {
+		return
+	}
+
+	items := append([]fileBatchItem(nil), entry.items...)
+	sort.SliceStable(items, func(i, j int) bool {
+		left, right := items[i].createTimeMs, items[j].createTimeMs
+		if left <= 0 || right <= 0 || left == right {
+			return false
+		}
+		return left < right
+	})
+	latestItem := items[len(items)-1]
+	userName := entry.userName
+	if userName == "" && entry.userID != "" {
+		userName = p.resolveUserName(entry.userID)
+	}
+	chatName := entry.chatName
+	if chatName == "" {
+		chatName = p.resolveChatName(latestItem.rctx.chatID)
+	}
+
+	files := make([]core.FileAttachment, 0, len(items))
+	messageIDs := make([]string, 0, len(items))
+	var canonical fileBatchItem
+	failedDownloads := 0
+	for _, item := range items {
+		if p.isMessageRecalled(item.messageID) {
+			slog.Debug(p.tag()+": recalled file batch member dropped", "message_id", item.messageID)
+			continue
+		}
+		fileData, err := p.downloadResource(item.messageID, item.fileKey, "file")
+		if err != nil {
+			failedDownloads++
+			slog.Error(p.tag()+": download file failed", "file_name", item.fileName, "error", err)
+			continue
+		}
+		files = append(files, core.FileAttachment{
+			MimeType: detectMimeType(fileData),
+			Data:     fileData,
+			FileName: item.fileName,
+		})
+		messageIDs = append(messageIDs, item.messageID)
+		canonical = item
+	}
+
+	if failedDownloads > 0 {
+		if err := p.Send(context.Background(), latestItem.rctx, "⚠️ File download failed (network error). Please resend."); err != nil {
+			slog.Error(p.tag()+": failed to notify user about file download failure", "error", err)
+		}
+	}
+	if len(files) == 0 {
+		return
+	}
+
+	slog.Info(p.tag()+": dispatched file batch",
+		"session_key", entry.sessionKey,
+		"file_count", len(files),
+		"message_ids", messageIDs,
+	)
+	p.dispatchCoreMessage(&core.Message{
+		SessionKey: entry.sessionKey, Platform: p.platformName,
+		MessageID: canonical.messageID,
+		UserID:    entry.userID, UserName: userName, ChatName: chatName,
+		Files:             files,
+		ReplyCtx:          canonical.rctx,
+		UserMessageTimeMs: canonical.createTimeMs,
+	})
+}
+
 func (p *Platform) onMessageRecalled(_ context.Context, event *larkim.P2MessageRecalledV1) error {
 	if event == nil || event.Event == nil {
 		return nil
@@ -1438,6 +1656,33 @@ func (p *Platform) replyUnauthorizedAccess(ctx context.Context, rctx replyContex
 func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, createTimeMs int64) {
 	if p.isMessageRecalled(messageID) {
 		slog.Debug(p.tag()+": recalled message ignored in async dispatch", "message_id", messageID)
+		return
+	}
+	// Buffer plain file metadata before any name resolution or resource
+	// download. Both may perform network IO, and allowing either to complete out
+	// of order would recreate the same watermark race this batch is meant to
+	// prevent. Quoted files continue through the legacy path below.
+	if msgType == "file" && parentID == "" {
+		var fileBody struct {
+			FileKey  string `json:"file_key"`
+			FileName string `json:"file_name"`
+		}
+		if err := json.Unmarshal([]byte(content), &fileBody); err != nil {
+			slog.Error(p.tag()+": failed to parse file content", "error", err)
+			return
+		}
+		slog.Info(p.tag()+": file received", "user", userID, "file_key", fileBody.FileKey, "file_name", fileBody.FileName)
+		p.bufferFile(sessionKey, &fileBatchEntry{
+			sessionKey: sessionKey,
+			userID:     userID,
+			items: []fileBatchItem{{
+				messageID:    messageID,
+				fileKey:      fileBody.FileKey,
+				fileName:     fileBody.FileName,
+				rctx:         rctx,
+				createTimeMs: createTimeMs,
+			}},
+		})
 		return
 	}
 
@@ -4612,8 +4857,9 @@ func (p *Platform) Stop() error {
 			slog.Error(p.tag()+": webhook server shutdown error", "error", err)
 		}
 	}
-	// Flush any pending image batches so buffered images aren't lost on shutdown.
+	// Flush pending attachment batches so accepted media aren't lost on shutdown.
 	p.flushImageBatches()
+	p.flushFileBatches()
 	return nil
 }
 
