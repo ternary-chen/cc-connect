@@ -1046,6 +1046,13 @@ app_secret = "your-feishu-app-secret"
 #                              # 都是独立事件，cc-connect 会在窗口内将它们合并成一条多图消息再分发；如果你的
 #                              # 网络或设备发送间隔超过 500ms 且仍被拆成多轮，可调高（如 800–1200ms）；如果
 #                              # 只是单图发送，希望响应更快，也可以适当调低。
+# file_batch_window_ms = 500   # Coalesce window for consecutive ordinary files from the same session (default: 500ms).
+#                              # Feishu emits a multi-select file send as separate events. cc-connect buffers the
+#                              # metadata, downloads files in message-time order, and dispatches one multi-file
+#                              # agent message so resource latency cannot make an older file look stale.
+#                              # 来自同一会话的连续普通文件消息合批窗口（默认 500ms）。飞书批量选择文件时，每个
+#                              # 文件仍是独立事件；cc-connect 会先合批，再按消息时间顺序下载并一次性交给 agent，
+#                              # 避免较早文件因下载完成较晚而被误判为旧消息。
 
 # Lark (International Version) / Lark 国际版
 # Lark now supports WebSocket long-connection too; webhook mode is only needed
