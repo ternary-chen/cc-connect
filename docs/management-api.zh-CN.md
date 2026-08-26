@@ -56,6 +56,7 @@ cc-connect 管理 API 是基于 HTTP 的 REST API，供外部应用（Web 控制
 ```toml
 [management]
 enabled = true
+host = "127.0.0.1"
 port = 9820
 token = "mgmt-secret"
 ```
@@ -63,10 +64,13 @@ token = "mgmt-secret"
 | 字段       | 类型    | 默认值   | 说明                                      |
 |------------|---------|----------|-------------------------------------------|
 | `enabled`  | boolean | `false`  | 是否启用管理 API 服务                     |
+| `host`     | string  | `""`     | 监听地址；留空时监听所有网卡              |
 | `port`     | integer | `9820`   | 监听 TCP 端口                             |
 | `token`    | string  | (必填)   | 认证用共享密钥                            |
 
-当 `enabled` 为 `false` 时，管理 API 不会启动。令牌应为强随机字符串（建议 32 字符以上）。
+当 `enabled` 为 `false` 时，管理 API 不会启动。设为 `127.0.0.1` 时管理后台仅允许
+本机访问；不填写 `host` 则保持旧版的全网卡监听行为。令牌应为强随机字符串（建议
+32 字符以上）。
 
 ### 2.2 基础 URL
 
@@ -1149,6 +1153,7 @@ GET /api/v1/status?token=mgmt-secret
 ```toml
 [management]
 enabled = true
+host = "127.0.0.1"
 port = 9820
 token = "mgmt-secret"
 cors_origins = ["http://localhost:3000", "https://dashboard.example.com"]

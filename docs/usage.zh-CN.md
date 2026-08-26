@@ -935,12 +935,16 @@ type = "claudecode"
 ```toml
 [management]
 enabled = true
+host = "127.0.0.1"             # 推荐：仅允许本机访问管理后台
 port = 9820                     # 管理后台监听端口
 token = "your-secret-token"     # 登录 token；/web setup 会自动生成
 cors_origins = ["*"]            # 允许的 CORS 来源；留空则不设置 CORS 头
 ```
 
 然后重启 cc-connect。
+
+`host` 为可选配置。设为 `127.0.0.1` 时管理后台只监听本机；不填写则保持旧版行为，
+监听所有网卡。只有在防火墙或反向代理保护下才建议监听所有网卡。
 
 ### 构建选项
 

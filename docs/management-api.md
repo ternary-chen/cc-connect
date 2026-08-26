@@ -56,6 +56,7 @@ Add the following to `config.toml`:
 ```toml
 [management]
 enabled = true
+host = "127.0.0.1"
 port = 9820
 token = "mgmt-secret"
 ```
@@ -63,10 +64,14 @@ token = "mgmt-secret"
 | Field    | Type    | Default   | Description                                      |
 |----------|---------|-----------|--------------------------------------------------|
 | `enabled`| boolean | `false`   | Enable the Management API server                 |
+| `host`   | string  | `""`      | Listen host; empty listens on all interfaces     |
 | `port`   | integer | `9820`    | TCP port to listen on                            |
 | `token`  | string  | (required)| Shared secret for authentication                 |
 
-When `enabled` is `false`, the Management API is not started. The token should be a strong, random string (e.g. 32+ characters).
+When `enabled` is `false`, the Management API is not started. Set `host` to
+`127.0.0.1` for a local-only admin UI. Omitting `host` preserves the legacy
+all-interface listener. The token should be a strong, random string (e.g. 32+
+characters).
 
 ### 2.2 Base URL
 
@@ -1177,6 +1182,7 @@ When the Management API is used by web dashboards, CORS headers should be config
 ```toml
 [management]
 enabled = true
+host = "127.0.0.1"
 port = 9820
 token = "mgmt-secret"
 cors_origins = ["http://localhost:3000", "https://dashboard.example.com"]

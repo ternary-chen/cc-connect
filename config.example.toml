@@ -395,6 +395,8 @@ level = "info" # debug, info, warn, error
 #
 # [management]
 # enabled = true
+# host = "127.0.0.1"                    # Recommended for local UI; empty = all interfaces (legacy).
+#                                      # 本机 UI 推荐 127.0.0.1；留空 = 所有网卡（兼容旧行为）。
 # port = 9820                           # HTTP listen port (default: 9820) / 监听端口
 # token = "your-mgmt-secret"            # Auth token (required) / 认证密钥（必填）
 # cors_origins = ["http://localhost:3000"]  # Allowed CORS origins / 允许的 CORS 来源

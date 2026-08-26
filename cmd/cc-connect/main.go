@@ -1118,6 +1118,7 @@ func main() {
 			port = 9820
 		}
 		mgmtSrv = core.NewManagementServer(port, cfg.Management.Token, cfg.Management.CORSOrigins)
+		mgmtSrv.SetHost(cfg.Management.Host)
 		for i, e := range engines {
 			mgmtSrv.RegisterEngine(cfg.Projects[i].Name, e)
 		}

@@ -178,6 +178,7 @@ type HookConfig struct {
 // ManagementConfig controls the HTTP Management API for external tools.
 type ManagementConfig struct {
 	Enabled     *bool    `toml:"enabled"`                // default false
+	Host        string   `toml:"host,omitempty"`         // listen host; empty preserves legacy all-interface binding
 	Port        int      `toml:"port,omitempty"`         // listen port; default 9820
 	Token       string   `toml:"token,omitempty"`        // shared secret for authentication; required
 	CORSOrigins []string `toml:"cors_origins,omitempty"` // allowed CORS origins; empty = no CORS
@@ -3945,6 +3946,9 @@ func EnableWebAdmin(mgmtToken, bridgeToken string) (*WebSetupResult, error) {
 	changed := false
 	if !mgmtEnabled {
 		cfg.Management.Enabled = &t
+		if cfg.Management.Host == "" {
+			cfg.Management.Host = "127.0.0.1"
+		}
 		if cfg.Management.Port == 0 {
 			cfg.Management.Port = 9820
 		}

@@ -1022,12 +1022,17 @@ Add the following to `config.toml`:
 ```toml
 [management]
 enabled = true
+host = "127.0.0.1"             # Recommended for a local-only admin UI
 port = 9820                     # Management UI & API listen port
 token = "your-secret-token"     # Login token; /web setup generates one automatically
 cors_origins = ["*"]            # Allowed CORS origins; empty = no CORS headers
 ```
 
 Then restart cc-connect.
+
+`host` is optional. Set it to `127.0.0.1` to keep the admin UI local to the
+machine. Omitting it preserves the legacy behavior of listening on all network
+interfaces; only do that behind an appropriate firewall or reverse proxy.
 
 ### Build Options
 

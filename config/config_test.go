@@ -583,6 +583,45 @@ func TestLoad_DefaultsDataDir(t *testing.T) {
 	}
 }
 
+func TestLoad_ParsesManagementHost(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	contents := `[management]
+enabled = true
+host = "127.0.0.1"
+port = 9820
+token = "test-management-token"
+` + baseConfigTOML
+	if err := os.WriteFile(cfgPath, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if got, want := cfg.Management.Host, "127.0.0.1"; got != want {
+		t.Fatalf("Management.Host = %q, want %q", got, want)
+	}
+}
+
+func TestEnableWebAdminDefaultsManagementHostToLoopback(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(baseConfigTOML), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	patchConfigPath(t, cfgPath)
+
+	if _, err := EnableWebAdmin("management-token", "bridge-token"); err != nil {
+		t.Fatalf("EnableWebAdmin() error: %v", err)
+	}
+	cfg := readConfigFixture(t, cfgPath)
+	if got, want := cfg.Management.Host, "127.0.0.1"; got != want {
+		t.Fatalf("Management.Host = %q, want %q", got, want)
+	}
+}
+
 func TestLoad_ResolvesEnvPlaceholders(t *testing.T) {
 
 	root := t.TempDir()
